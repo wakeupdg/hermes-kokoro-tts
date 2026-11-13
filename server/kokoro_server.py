@@ -59,10 +59,13 @@ class Engine:
     """Owns the loaded model. ``synthesize`` is serialized: MLX inference is not re-entrant."""
 
     def __init__(self, repo: str, revision: str, loader: Optional[Callable[[], Any]] = None,
-                 snapshot: Optional[Path] = None):
+                 snapshot: Optional[Path] = None, user_voices: Optional[Path] = None):
         self.repo, self.revision = repo, revision
         self._loader = loader
         self._snapshot = snapshot
+        # Extra voices the user adds (``<service_dir>/voices``). MLX only: those are .safetensors,
+        # which load as plain tensors; a user .pt (Linux) would be unpickled, which can run code.
+        self.user_voices = user_voices if MLX else None
         self._model: Any = None
         self._lock = threading.Lock()
         self.error: Optional[str] = None
@@ -94,17 +97,25 @@ class Engine:
             self.error = f"{type(exc).__name__}: {exc}"
             log.exception("model failed to load")
 
+    def _voice_folders(self) -> list[Path]:
+        """The pinned snapshot first, so an official voice always wins over a user file of the same id."""
+        folders = [self.snapshot() / "voices"]
+        if self.user_voices is not None and self.user_voices.is_dir():
+            folders.append(self.user_voices)
+        return folders
+
     def voices(self) -> list[str]:
-        folder = self.snapshot() / "voices"
-        return sorted(p.stem for p in folder.glob(f"*{VOICE_SUFFIX}") if kokoro_voices.is_valid_voice_id(p.stem))
+        return sorted({p.stem for folder in self._voice_folders() for p in folder.glob(f"*{VOICE_SUFFIX}")
+                       if kokoro_voices.is_valid_voice_id(p.stem) and p.is_file()})
 
     def voice_path(self, voice: str) -> Path:
         if not kokoro_voices.is_valid_voice_id(voice):
             raise ValueError(f"invalid voice id {voice!r}")
-        path = self.snapshot() / "voices" / f"{voice}{VOICE_SUFFIX}"
-        if not path.is_file():
-            raise VoiceNotFound(f"voice {voice!r} is not in the installed model")
-        return path
+        for folder in self._voice_folders():
+            path = folder / f"{voice}{VOICE_SUFFIX}"
+            if path.is_file():
+                return path
+        raise VoiceNotFound(f"voice {voice!r} is not in the installed model or the user voices folder")
 
     def synthesize(self, text: str, voice: str, lang_code: str, speed: float,
                    english_words: Optional[list] = None, english_accent: str = "a") -> bytes:
@@ -357,6 +368,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--default-voice", default=kokoro_voices.DEFAULT_VOICE)
     parser.add_argument("--prime", action="append", default=[], metavar="VOICE",
                         help="also load this voice's language pipeline at start-up (repeatable)")
+    parser.add_argument("--user-voices", type=Path, default=None, metavar="DIR",
+                        help="extra voice files (<id>.safetensors, macOS only); official voices win on a clash")
     parser.add_argument("--download", action="store_true", help="download the pinned model and exit (installer)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -366,7 +379,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         return
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-    engine = Engine(args.model, args.revision)
+    engine = Engine(args.model, args.revision, user_voices=args.user_voices)
     httpd = serve(engine, args.host, args.port, args.default_voice)
 
     def load_and_prime() -> None:

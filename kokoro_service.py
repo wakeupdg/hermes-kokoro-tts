@@ -135,7 +135,8 @@ def find_uv() -> str:
 def _server_args(cfg: ServiceConfig, repo: str, revision: str) -> list[str]:
     args = [str(cfg.launcher), str(cfg.service_dir / "server" / "kokoro_server.py"),
             "--host", "127.0.0.1", "--port", str(cfg.port),
-            "--model", repo, "--revision", revision, "--default-voice", cfg.default_voice]
+            "--model", repo, "--revision", revision, "--default-voice", cfg.default_voice,
+            "--user-voices", str(cfg.service_dir / "voices")]
     for voice in cfg.prime_voices:
         args += ["--prime", voice]
     return args

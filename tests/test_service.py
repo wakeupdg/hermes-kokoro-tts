@@ -50,6 +50,7 @@ def test_plist_is_valid_loopback_and_pinned(cfg):
     assert args[args.index("--host") + 1] == "127.0.0.1" and args[args.index("--port") + 1] == "8799"
     assert args[args.index("--revision") + 1] == svc.MODEL_REVISION and len(svc.MODEL_REVISION) == 40
     assert args[args.index("--default-voice") + 1] == "pf_dora"
+    assert args[args.index("--user-voices") + 1] == str(cfg.service_dir / "voices")
     assert plist["EnvironmentVariables"]["HF_HUB_OFFLINE"] == "1"
 
 

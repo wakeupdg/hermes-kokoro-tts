@@ -433,3 +433,50 @@ def test_download_patterns_follow_the_backend(monkeypatch, mlx):
     assert str(ks.download("org/model", "r" * 40, local_files_only=True)) == "/snap"
     expected = ["*.safetensors", "*.json"] if mlx else ["config.json", "kokoro-v1_0.pth", "voices/*.pt"]
     assert calls == [("org/model", {"revision": "r" * 40, "allow_patterns": expected, "local_files_only": True})]
+
+
+# --- user voices folder (<service_dir>/voices) -------------------------------------------
+
+def _user_engine(monkeypatch, snapshot, user_dir, mlx=True):
+    monkeypatch.setattr(ks, "MLX", mlx)
+    engine = ks.Engine("repo/x", "a" * 40, loader=FakeModel, snapshot=snapshot, user_voices=user_dir)
+    engine.load()
+    return engine
+
+
+def test_user_voice_is_listed_and_resolved(monkeypatch, snapshot, tmp_path):
+    user = tmp_path / "user-voices"
+    user.mkdir()
+    (user / f"af_amber{ks.VOICE_SUFFIX}").write_bytes(b"x")
+    (user / f"../escape{ks.VOICE_SUFFIX}").write_bytes(b"x")  # lands outside the folder; never listed
+    (user / f"Bad Id{ks.VOICE_SUFFIX}").write_bytes(b"x")
+    engine = _user_engine(monkeypatch, snapshot, user)
+    assert engine.voices() == ["af_amber", "af_heart", "pf_dora"]
+    assert engine.voice_path("af_amber") == user / f"af_amber{ks.VOICE_SUFFIX}"
+
+
+def test_official_voice_wins_over_a_user_file_with_the_same_id(monkeypatch, snapshot, tmp_path):
+    user = tmp_path / "user-voices"
+    user.mkdir()
+    (user / f"af_heart{ks.VOICE_SUFFIX}").write_bytes(b"user copy")
+    engine = _user_engine(monkeypatch, snapshot, user)
+    assert engine.voices().count("af_heart") == 1
+    assert engine.voice_path("af_heart") == snapshot / "voices" / f"af_heart{ks.VOICE_SUFFIX}"
+
+
+def test_missing_user_folder_and_unknown_voice(monkeypatch, snapshot, tmp_path):
+    engine = _user_engine(monkeypatch, snapshot, tmp_path / "absent")
+    assert engine.voices() == ["af_heart", "pf_dora"]
+    with pytest.raises(ks.VoiceNotFound):
+        engine.voice_path("af_amber")
+    with pytest.raises(ValueError):
+        engine.voice_path("../af_heart")
+
+
+def test_user_voices_ignored_off_mlx(monkeypatch, snapshot, tmp_path):
+    """Linux voices are .pt pickles; a user file there could run code, so the folder is off."""
+    user = tmp_path / "user-voices"
+    user.mkdir()
+    (user / f"af_amber{ks.VOICE_SUFFIX}").write_bytes(b"x")
+    engine = _user_engine(monkeypatch, snapshot, user, mlx=False)
+    assert engine.user_voices is None and "af_amber" not in engine.voices()
